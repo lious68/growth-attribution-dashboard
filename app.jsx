@@ -1,442 +1,77 @@
-const { useEffect, useMemo, useRef, useState } = React;
-const DATA = window.GROWTH_DATA;
-
-const BASE_SERIES = [
-  { id: "valid", name: "全部有效注册", group: "root", color: "#174A5B", width: 3.2, dash: "solid", total: DATA.summary.validRegistrations, note: "有效注册汇总" },
-  { id: "growth", name: "用增部分", group: "department", color: "#159A8C", width: 2.8, dash: "solid", total: 3273, note: "用增归属注册" },
-  { id: "sales", name: "销售自拓", group: "department", color: "#4B8DE8", width: 2.4, dash: "solid", total: 5480, note: "销售自主拓展" },
-  { id: "sem", name: "SEM投流", group: "department", color: "#8072D4", width: 2.4, dash: "solid", total: 3942, note: "搜索广告投放" },
-  { id: "ambassador", name: "U大使", group: "department", color: "#EAB65F", width: 2.4, dash: "solid", total: 1633, note: "大使推荐注册" },
-  { id: "confirmed", name: "确定的（100%）", group: "confidence", color: "#159A8C", width: 3, dash: "solid", total: DATA.summary.confirmed, note: "Referer、UTM 或专属链接等明确命中" },
-  { id: "assisted", name: "大概率的（>60%）", group: "confidence", color: "#F0A45D", width: 2.4, dash: "dashed", total: DATA.summary.assisted, note: "注册前 7 天访问过对应渠道来源" },
-  { id: "unidentified", name: "有可能的", group: "confidence", color: "#9AAFB7", width: 2.2, dash: "dashed", total: DATA.summary.unidentified, note: "没有可靠证据" },
-  { id: "geo", name: "GEO", group: "channel", color: "#159A8C", width: 2, dash: "solid", note: "AI 问答来源域名" },
-  { id: "content", name: "内容运营", group: "channel", color: "#4B8DE8", width: 2, dash: "solid", note: "内容平台 Referer / UTM" },
-  { id: "kol", name: "社群&站外运营", group: "channel", color: "#8072D4", width: 2, dash: "solid", note: "外链合作 / KOL" },
-  { id: "community", name: "开发者运营", group: "channel", color: "#38B39A", width: 2, dash: "solid", note: "开发者产品与社区来源" },
-  { id: "offline", name: "活动运营", group: "channel", color: "#EAB65F", width: 2, dash: "solid", note: "线上 / 广告 / 线下活动" },
-  { id: "event", name: "热点响应", group: "channel", color: "#E97979", width: 2, dash: "solid", note: "事件营销 campaign" },
-  { id: "other", name: "other", group: "channel", color: "#A58A65", width: 2.2, dash: "dashed", total: 947, note: "大概率的（>60%） + 有可能的" }
-].map((item) => ({
-  ...item,
-  values: DATA.trends[item.id],
-  total: item.total ?? DATA.trends[item.id].reduce((sum, value) => sum + value, 0)
-}));
-
-function distributeTotal(total, weights) {
-  const weightSum = weights.reduce((sum, value) => sum + value, 0);
-  const raw = weights.map((value) => value * total / weightSum);
-  const values = raw.map(Math.floor);
-  let remainder = total - values.reduce((sum, value) => sum + value, 0);
-  raw.map((value, index) => ({ index, fraction: value - Math.floor(value) }))
-    .sort((a, b) => b.fraction - a.fraction)
-    .slice(0, remainder)
-    .forEach(({ index }) => { values[index] += 1; });
-  return values;
+// Design: preserve the existing teal UI; separate category expansion from time expansion.
+// Original daily demo data is authoritative for period totals. Source rows are simulated splits.
+const {useState,useMemo,useEffect,useRef}=React;
+const D=window.GROWTH_DATA;
+const dates=D.dates.map(x=>'2026-'+x.replace('/','-'));
+const fmt=n=>n.toLocaleString('zh-CN');
+const short=d=>d.slice(5).replace('-','/');
+const sum=(a,indices)=>indices.reduce((s,i)=>s+a[i],0);
+const colors=['#159A8C','#4B8DE8','#8072D4','#BA893C'];
+function split(total,weights){
+ const s=weights.reduce((a,b)=>a+b,0),raw=weights.map(w=>w*total/s),out=raw.map(Math.floor);
+ raw.map((v,i)=>({i,r:v-out[i]})).sort((a,b)=>b.r-a.r).slice(0,total-out.reduce((a,b)=>a+b,0)).forEach(x=>out[x.i]++);
+ return out;
 }
-
-const SOURCE_COLORS = ["#246B8E", "#4B8DE8", "#8072D4", "#38B39A", "#EAB65F"];
-const SOURCE_SERIES = Object.entries(DATA.details).flatMap(([parentId, sources]) => sources.map((source, index) => ({
-  id: `source-${parentId}-${index}`,
-  parentId,
-  name: source.source,
-  group: "source",
-  color: SOURCE_COLORS[index % SOURCE_COLORS.length],
-  width: 2,
-  dash: index === sources.length - 1 && sources.length > 3 ? "dashed" : "solid",
-  total: source.confirmed,
-  note: source.evidence,
-  values: distributeTotal(source.confirmed, DATA.trends[parentId])
-})));
-const SERIES = [...BASE_SERIES, ...SOURCE_SERIES];
-
-const OVERVIEW_IDS = ["valid", "growth", "sales", "sem", "ambassador"];
-const DEPARTMENT_IDS = ["growth", "sales", "sem", "ambassador"];
-const CONFIDENCE_IDS = ["confirmed", "assisted", "unidentified"];
-const CHANNEL_IDS = ["geo", "content", "kol", "community", "offline", "event", "other"];
-const sourceSeriesFor = (parentId) => SOURCE_SERIES.filter((item) => item.parentId === parentId);
-
-function Icon({ name, size = 16 }) {
-  const paths = {
-    download: <><path d="M12 3v12m0 0 4-4m-4 4-4-4"></path><path d="M4 19h16"></path></>,
-    palette: <><circle cx="12" cy="12" r="9"></circle><path d="M8 9h.01M12 7h.01M16 9h.01M8 14h.01"></path></>,
-    check: <path d="m5 12 4 4L19 6"></path>,
-    arrow: <path d="m9 18 6-6-6-6"></path>,
-    close: <><path d="m6 6 12 12"></path><path d="m18 6-12 12"></path></>
-  };
-  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
+const nodes={};
+D.attributionTree.children.forEach((d,di)=>{
+ nodes[d.id]={...d,values:D.trends[d.id],color:colors[di],children:(d.children||[]).map(c=>c.id)};
+ (d.children||[]).forEach(c=>{
+  const sources=D.details[c.id]||[];
+  const allocations=D.trends[c.id].map(v=>sources.length?split(v,sources.map(s=>s.confirmed)):[]);
+  nodes[c.id]={...c,values:D.trends[c.id],color:colors[0],children:sources.map((s,i)=>c.id+'-'+i)};
+  sources.forEach((s,i)=>nodes[c.id+'-'+i]={id:c.id+'-'+i,name:s.source,values:allocations.map(a=>a[i]),color:colors[0],children:[],simulated:true});
+ });
+});
+const departmentIds=D.attributionTree.children.map(d=>d.id);
+nodes.all={id:'all',name:'注册归属合计',values:dates.map((_,i)=>departmentIds.reduce((s,id)=>s+nodes[id].values[i],0)),children:departmentIds,color:'#174A5B'};
+function groups(indices,grain){
+ if(grain==='day')return indices.map(i=>({key:dates[i],label:short(dates[i]),indices:[i]}));
+ const map=new Map();
+ indices.forEach(i=>{const d=new Date(dates[i]+'T00:00:00Z');d.setUTCDate(d.getUTCDate()-((d.getUTCDay()+6)%7));const key=d.toISOString().slice(0,10);if(!map.has(key))map.set(key,[]);map.get(key).push(i)});
+ return [...map].map(([key,ix],i)=>({key,label:`第 ${i+1} 周`,indices:ix,partial:ix.length<7}));
 }
-
-function TrendChart({ activeIds, primaryColor, period }) {
-  const ref = useRef(null);
-  const option = useMemo(() => {
-    const visible = SERIES.filter((item) => activeIds.has(item.id));
-    const days = Number.parseInt(period, 10);
-    const dates = DATA.dates.slice(-days);
-    return {
-      animationDuration: 420,
-      color: visible.map((item) => item.id === "confirmed" || item.id === "geo" ? primaryColor : item.color),
-      tooltip: {
-        trigger: "axis",
-        backgroundColor: "#174A5B",
-        borderWidth: 0,
-        padding: [10, 12],
-        textStyle: { color: "#FFFFFF", fontFamily: "Noto Sans SC", fontSize: 12 },
-        order: "seriesAsc"
-      },
-      grid: { left: 58, right: 28, top: 24, bottom: 54 },
-      xAxis: {
-        type: "category",
-        boundaryGap: false,
-        data: dates,
-        axisLine: { lineStyle: { color: "#C9D4DC" } },
-        axisTick: { show: false },
-        axisLabel: { color: "#738592", fontSize: 11, interval: 1, margin: 14 }
-      },
-      yAxis: {
-        type: "value",
-        min: (value) => Math.max(0, Math.floor(value.min * 0.92)),
-        max: (value) => Math.ceil(value.max * 1.06),
-        axisLine: { show: false },
-        axisTick: { show: false },
-        axisLabel: { color: "#738592", fontSize: 11 },
-        splitLine: { lineStyle: { color: "#DEEBE8", type: "dashed" } }
-      },
-      dataZoom: [{ type: "inside", zoomOnMouseWheel: false, moveOnMouseMove: true }],
-      series: visible.map((item) => ({
-        id: item.id,
-        name: item.name,
-        type: "line",
-        data: item.values.slice(-days),
-        showSymbol: false,
-        symbol: "circle",
-        smooth: false,
-        lineStyle: {
-          width: item.width,
-          type: item.dash,
-          color: item.id === "confirmed" || item.id === "geo" ? primaryColor : item.color
-        },
-        itemStyle: { color: item.id === "confirmed" || item.id === "geo" ? primaryColor : item.color },
-        emphasis: { focus: "series", lineStyle: { width: item.width + 1 } }
-      }))
-    };
-  }, [activeIds, primaryColor, period]);
-
-  useEffect(() => {
-    const chart = echarts.init(ref.current);
-    chart.setOption(option, true);
-    const resize = () => chart.resize();
-    window.addEventListener("resize", resize);
-    return () => { chart.dispose(); window.removeEventListener("resize", resize); };
-  }, [option]);
-
-  return <div className="chart-stage">
-    <div ref={ref} className="trend-chart"></div>
-    {activeIds.size === 0 ? <div className="chart-empty"><strong>暂未选择曲线</strong><span>点击上方指标或下方渠道重新显示</span></div> : null}
-  </div>;
+function App(){
+ const [start,setStart]=useState("2026-09-01"),[end,setEnd]=useState(dates.at(-1)),[grain,setGrain]=useState('day');
+ const [expanded,setExpanded]=useState(new Set(['all','growth'])),[weeks,setWeeks]=useState(new Set());
+ const [focus,setFocus]=useState('growth'),[detail,setDetail]=useState(null),[message,setMessage]=useState('');
+ const [t,setTweak]=useTweaks(window.TWEAK_DEFAULTS);
+ const ref=useRef(null);
+ const indices=useMemo(()=>dates.map((_,i)=>i).filter(i=>dates[i]>=start&&dates[i]<=end),[start,end]);
+ const buckets=useMemo(()=>groups(indices,grain),[indices,grain]);
+ const valid=start&&end&&start<=end&&indices.length>0;
+ const toggle=(setter,set,key)=>setter(new Set(set.has(key)?[...set].filter(k=>k!==key):[...set,key]));
+ const visible=[];function visit(id,depth){visible.push({...nodes[id],depth});if(expanded.has(id))nodes[id].children.forEach(c=>visit(c,depth+1))}visit('all',0);
+ const columns=buckets.flatMap(b=>grain==='week'&&weeks.has(b.key)?[{...b,kind:'week'},...groups(b.indices,'day').map(d=>({...d,kind:'child'}))]:[{...b,kind:grain}]);
+ useEffect(()=>{document.documentElement.style.setProperty('--brand',t.primaryColor);document.body.dataset.density=t.density},[t]);
+ useEffect(()=>{
+  if(!valid)return;
+  const chart=echarts.init(ref.current);
+  chart.setOption({animation:false,grid:{left:52,right:24,top:18,bottom:48},tooltip:{trigger:'axis',valueFormatter:fmt},xAxis:{type:'category',data:buckets.map(b=>grain==='week'?`${b.label}\n${short(dates[b.indices[0]])}–${short(dates[b.indices.at(-1)])}`:b.label),axisTick:{show:false},axisLine:{lineStyle:{color:'#D8E7E4'}},axisLabel:{color:'#68808A',interval:'auto'}},yAxis:{type:'value',min:0,splitLine:{lineStyle:{color:'#E6EEEB',type:'dashed'}},axisLabel:{color:'#68808A'}},series:[{name:nodes[focus].name,type:grain==='week'?'bar':'line',data:buckets.map(b=>sum(nodes[focus].values,b.indices)),barMaxWidth:76,symbolSize:7,lineStyle:{width:2.5},itemStyle:{color:t.primaryColor},areaStyle:grain==='day'?{opacity:.05}:undefined}]});
+  chart.on('click',p=>setDetail({id:focus,bucket:buckets[p.dataIndex]}));
+  const resize=()=>chart.resize();window.addEventListener('resize',resize);return()=>{chart.dispose();window.removeEventListener('resize',resize)};
+ },[buckets,focus,grain,valid,t.primaryColor]);
+ useEffect(()=>{const handler=e=>{if(e.key==='Escape')setDetail(null)};window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler)},[]);
+ useEffect(()=>{if(detail)document.querySelector('.drawer .close')?.focus()},[detail]);
+ function range(n){setStart(dates[Math.max(0,dates.length-n)]);setEnd(dates.at(-1));setWeeks(new Set());setDetail(null)}
+ function exportCSV(){const rows=[['分类','区间合计',...columns.map(b=>b.kind==='week'?`${b.label} ${short(dates[b.indices[0]])}-${short(dates[b.indices.at(-1)])} 合计`:b.label)],...visible.map(r=>[r.name,sum(r.values,indices),...columns.map(b=>sum(r.values,b.indices))])];const blob=new Blob(['\uFEFF'+rows.map(row=>row.map(v=>'"'+String(v).replaceAll('"','""')+'"').join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`分类${grain==='day'?'日报':'周报'}-${start}-${end}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);setMessage('已导出当前可见分类和时间列')}
+ return <div>
+ <header><div className="brand"><b>UG</b><div><strong>用增数据看板</strong><small>注册归因 · 分类与时间分析</small></div></div><span className="badge">交互设计稿 · 演示数据</span></header>
+ <main><div className="intro"><div><span className="eyebrow">分类分析</span><h1>每天的变化，每周的结果</h1><p>沿着注册归属、用增渠道和具体来源，查看同一时间段的贡献。</p></div><button onClick={exportCSV} disabled={!valid}>导出当前表格 ↓</button></div>
+ <section className="filters"><div className="range"><label>日期范围 <input aria-label="开始日期" type="date" min={dates[0]} max={dates.at(-1)} value={start} onChange={e=>{setStart(e.target.value);setDetail(null)}}/></label><span>至</span><input aria-label="结束日期" type="date" min={dates[0]} max={dates.at(-1)} value={end} onChange={e=>{setEnd(e.target.value);setDetail(null)}}/><button onClick={()=>range(7)}>最近 7 天</button><button onClick={()=>{setStart("2026-07-01");setEnd("2026-07-30");setDetail(null)}}>7月1—30日</button><button onClick={()=>{setStart("2026-08-01");setEnd("2026-08-31");setDetail(null)}}>8月</button><button onClick={()=>{setStart("2026-09-01");setEnd(dates.at(-1));setDetail(null)}}>本月</button><button onClick={()=>range(dates.length)}>全部日期</button></div><div className="granularity"><span>展示粒度</span><div className="segmented">{[['day','按日'],['week','按周']].map(([id,label])=><button key={id} aria-pressed={grain===id} className={grain===id?'active':''} onClick={()=>{setGrain(id);setDetail(null)}}>{label}</button>)}</div></div></section>
+ <div className="range-note">数据范围：2026/07/01—09/10 · 北京时间 · {grain==='day'?'每日一列，连续展示所选日期':'周一至周日；周序号按所选区间排列，首尾不足一周仅汇总已选日期'}</div>
+ {!valid?<section className="empty" role="alert">请选择有效日期范围，开始日期不能晚于结束日期。数据覆盖 7 月 1 日至 9 月 10 日。</section>:<>
+ <section className="chart-panel"><div className="section-head"><div><h2>{nodes[focus].name} <span> / {grain==='day'?'每日趋势':'每周合计'}</span></h2><p>{short(start)}—{short(end)} · {indices.length} 天 · 点击图中数据查看明细</p></div><div className="metric"><span>区间合计</span><strong>{fmt(sum(nodes[focus].values,indices))}<small> 人</small></strong></div></div><div ref={ref} className="chart"></div></section>
+ <section className="table-panel"><div className="section-head"><div><h2>分类{grain==='day'?'日报':'周报'}</h2><p>{grain==='day'?'逐日看数量，点击数字查看当天构成':'每周合计 = 所选周内每天之和；点击周标题展开每日数据'}</p></div><div className="actions"><button onClick={()=>setExpanded(new Set(['all','growth',...nodes.growth.children]))}>展开所有分类</button><button onClick={()=>setExpanded(new Set(['all']))}>收起分类</button></div></div>
+ <div className="table-scroll"><table><thead><tr><th className="name-cell">分类 / 点击名称联动趋势</th><th className="total-cell">区间合计<small>{indices.length} 天</small></th>{columns.map(b=><th key={b.key+'-'+b.kind} className={b.kind==='child'?'child-head':''}>{b.kind==='week'?<button className="week-toggle" aria-expanded={weeks.has(b.key)} onClick={()=>toggle(setWeeks,weeks,b.key)}>{weeks.has(b.key)?'−':'＋'} {b.label}<small>{short(dates[b.indices[0]])}—{short(dates[b.indices.at(-1)])}</small><em>{b.partial?`不足一周 · ${b.indices.length} 天`:'完整周 · 7 天'}</em></button>:<>{b.label}<small>周{'日一二三四五六'[new Date(b.key+'T00:00:00Z').getUTCDay()]}</small></>}</th>)}</tr></thead>
+ <tbody>{visible.map(r=><tr key={r.id} className={`${focus===r.id?'selected':''} ${r.depth===0?'root-row':''}`}><th className="name-cell"><div style={{paddingLeft:r.depth*17}}>{r.children.length?<button className="expand" aria-label={`${expanded.has(r.id)?'收起':'展开'}${r.name}`} aria-expanded={expanded.has(r.id)} onClick={()=>toggle(setExpanded,expanded,r.id)}>{expanded.has(r.id)?'⌄':'›'}</button>:<span className="leaf"></span>}<button className="row-name" onClick={()=>setFocus(r.id)}>{r.name}</button>{r.simulated?<small className="split-label">模拟</small>:null}</div></th><td className="total-cell"><button onClick={()=>setDetail({id:r.id,bucket:{label:'所选区间',indices}})}>{fmt(sum(r.values,indices))}</button></td>{columns.map(b=><td className={b.kind==='child'?'child-data':''} key={b.key+'-'+b.kind}><button onClick={()=>setDetail({id:r.id,bucket:b})}>{fmt(sum(r.values,b.indices))}</button></td>)}</tr>)}</tbody></table></div>
+ <div className="table-foot"><span>固定分类和区间合计，左右滑动查看全部日期</span><span>{grain==='week'?'展开的每日列是周合计的明细，不重复计入区间合计':'单位：人 · 数量按注册日期求和'}</span></div></section>
+ <TrafficModule indices={indices} buckets={buckets} grain={grain} primaryColor={t.primaryColor}/>
+ <div className="notes"><strong>统计口径</strong><p>上方分类及下方访问与转化报告共用同一日期范围和日／周粒度。注册数量使用同一份模拟每日数据，渠道与具体来源为模拟拆分；附件四周的核心指标作为周基准，按日分配不代表真实每日记录。</p></div>
+ </>}
+ <div role="status" className="status">{message}</div><footer>参考 <a href="https://www.metabase.com/docs/latest/dashboards/filters" target="_blank" rel="noreferrer">Metabase 时间分组</a> 与 <a href="https://www.metabase.com/docs/latest/questions/visualizations/drill-through" target="_blank" rel="noreferrer">点击下钻</a> · 模拟数据截至 2026/09/10</footer></main>
+ {detail?<div className="overlay" onClick={()=>setDetail(null)}><section className="drawer" role="dialog" aria-modal="true" aria-label="数据明细" onClick={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==='Tab'){const a=[...e.currentTarget.querySelectorAll('button,a,input')];if(e.shiftKey&&document.activeElement===a[0]){e.preventDefault();a.at(-1).focus()}else if(!e.shiftKey&&document.activeElement===a.at(-1)){e.preventDefault();a[0].focus()}}}}><button className="close" aria-label="关闭明细" onClick={()=>setDetail(null)}>×</button><span className="eyebrow">{detail.bucket.indices.length===1?'当日明细':'时间明细'}</span><h2>{nodes[detail.id].name}</h2><p>{short(dates[detail.bucket.indices[0]])}—{short(dates[detail.bucket.indices.at(-1)])} · {detail.bucket.indices.length} 天</p><div className="drawer-total">{fmt(sum(nodes[detail.id].values,detail.bucket.indices))}<small> 人</small></div><h3>{detail.bucket.indices.length===1?'分类构成':'每天的数据'}</h3>{detail.bucket.indices.length>1?detail.bucket.indices.map(i=><button className="detail-row" key={i} onClick={()=>setDetail({id:detail.id,bucket:{label:short(dates[i]),indices:[i]}})}><span>{short(dates[i])}</span><b>{fmt(nodes[detail.id].values[i])}　›</b></button>):nodes[detail.id].children.length?nodes[detail.id].children.map(id=><button className="detail-row" key={id} onClick={()=>{setFocus(id);setDetail({id,bucket:detail.bucket})}}><span>{nodes[id].name}{nodes[id].simulated?' · 模拟':''}</span><b>{fmt(sum(nodes[id].values,detail.bucket.indices))}　›</b></button>):<p className="drawer-note">已到最细分类。{nodes[detail.id].simulated?'具体来源每日值为模拟分配。':'当前没有更细来源数据。'}</p>}<button className="primary" onClick={()=>{setFocus(detail.id);setDetail(null)}}>在趋势图中查看这个分类</button></section></div>:null}
+ <button className="style-button" onClick={()=>window.postMessage({type:'miaoda:tweaks:activate'},'*')}>外观</button><TweaksPanel title="外观"><TweakColor label="主色" value={t.primaryColor} options={['#159A8C','#3B82D0','#6F69C9']} onChange={v=>setTweak('primaryColor',v)}/><TweakRadio label="表格密度" value={t.density} options={['compact','regular','comfy']} onChange={v=>setTweak('density',v)}/></TweaksPanel>
+ </div>
 }
-
-function SeriesChip({ item, active, onToggle, primaryColor }) {
-  const color = item.id === "confirmed" || item.id === "geo" ? primaryColor : item.color;
-  return <button className={`series-chip ${active ? "active" : "muted"}`} onClick={() => onToggle(item.id)} aria-pressed={active}>
-    <span className="series-check" style={{ borderColor: color, background: active ? color : "#FFFFFF" }}>{active ? <Icon name="check" size={12}></Icon> : null}</span>
-    <span className="series-copy"><strong>{item.name}</strong><small>{item.total.toLocaleString()}</small></span>
-    <i className="series-line" style={{ background: color }}></i>
-  </button>;
-}
-
-function DrilldownTree({ selectedL2, selectedL3, selectedL4, activeIds, growthChannelsOpen, level4Open, onSelectRoot, onSelectL2, onExpandGrowth, onSelectL3, onSelectL4, onToggleLine, linkLabel }) {
-  const root = DATA.attributionTree;
-  const growth = root.children.find((item) => item.id === "growth");
-  const activeL2 = root.children.find((item) => item.id === selectedL2);
-  const activeL3 = growth.children.find((item) => item.id === selectedL3);
-  const [l2Open, setL2Open] = useState(true);
-  const [growthOpen, setGrowthOpen] = useState(growthChannelsOpen);
-  const [expandedL3, setExpandedL3] = useState(level4Open ? selectedL3 : null);
-
-  useEffect(() => {
-    if (selectedL2 === "growth" && growthChannelsOpen) {
-      setL2Open(true);
-      setGrowthOpen(true);
-      if (level4Open) setExpandedL3(selectedL3);
-    } else if (!growthChannelsOpen) {
-      setGrowthOpen(false);
-      setExpandedL3(null);
-    }
-  }, [selectedL2, selectedL3, growthChannelsOpen, level4Open]);
-
-  const isLineActive = (id) => activeIds.has(id);
-  const lineState = (id) => <button className={`line-state ${isLineActive(id) ? "active" : ""}`} onClick={() => onToggleLine(id)} aria-pressed={isLineActive(id)} title="点击切换曲线显示状态"><i></i>{isLineActive(id) ? "已显示" : "未显示"}</button>;
-  const treeArrow = (open) => <span className={`tree-arrow ${open ? "open" : ""}`}><Icon name="arrow" size={14}></Icon></span>;
-  const toggleGrowth = () => {
-    if (growthOpen) {
-      setGrowthOpen(false);
-      setExpandedL3(null);
-      onSelectL2("growth");
-    }
-    else {
-      setL2Open(true);
-      setGrowthOpen(true);
-      onExpandGrowth();
-    }
-  };
-  const toggleL3 = (id) => {
-    if (expandedL3 === id) setExpandedL3(null);
-    else {
-      setExpandedL3(id);
-      onSelectL3(id);
-    }
-  };
-  const expandCurrent = () => {
-    setL2Open(true);
-    setGrowthOpen(true);
-    setExpandedL3(selectedL3);
-  };
-  const collapseAll = () => {
-    setL2Open(false);
-    setGrowthOpen(false);
-    setExpandedL3(null);
-  };
-
-  return <section className="drill-panel monitor-panel" aria-label="注册量四级下钻">
-    <div className="monitor-toolbar">
-      <div className="path-strip"><span>当前路径</span><strong>{root.name}</strong><Icon name="arrow" size={13}></Icon><strong>{activeL2.name}</strong>{selectedL2 === "growth" ? <><Icon name="arrow" size={13}></Icon><strong>{activeL3.name}</strong>{selectedL4 ? <><Icon name="arrow" size={13}></Icon><strong>{SERIES.find((item) => item.id === selectedL4)?.name}</strong></> : null}</> : null}<em><i></i>{linkLabel}</em></div>
-      <div className="monitor-actions"><button onClick={expandCurrent}>展开当前路径</button><button onClick={collapseAll}>全部收起</button></div>
-    </div>
-    <div className="monitor-table-wrap">
-      <table className="monitor-table">
-        <colgroup><col className="col-object"></col><col className="col-evidence"></col><col className="col-number"></col><col className="col-share"></col><col className="col-state"></col></colgroup>
-        <tbody>
-          <tr className="monitor-row level-1 selected">
-            <td><div className="tree-object depth-1"><button className="tree-label" onClick={() => { setL2Open(true); onSelectRoot(); }}><strong>{root.name}</strong></button><button className="tree-arrow-button" onClick={() => setL2Open((value) => !value)} aria-label={l2Open ? "收起注册归属" : "展开注册归属"} title={l2Open ? "收起下级" : "展开下级"}>{treeArrow(l2Open)}</button></div></td><td>{root.note}</td><td className="number-cell">{root.value.toLocaleString()}</td><td className="share-cell">100.0%</td><td>{lineState("valid")}</td>
-          </tr>
-          {l2Open ? root.children.map((item) => {
-            const share = item.value / root.value * 100;
-            const selected = selectedL2 === item.id;
-            return <React.Fragment key={item.id}>
-              <tr className={`monitor-row level-2 ${selected ? "selected" : ""}`}>
-                <td><div className="tree-object depth-2"><span className="tree-rail"></span><button className="tree-label" onClick={() => onSelectL2(item.id)}><strong>{item.name}</strong></button>{item.id === "growth" ? <button className="tree-arrow-button" onClick={toggleGrowth} aria-label={growthOpen ? "收起用增渠道" : "展开用增渠道"} title={growthOpen ? "收起下级" : "展开下级"}>{treeArrow(growthOpen)}</button> : null}</div></td><td>{item.note}</td><td className="number-cell">{item.value.toLocaleString()}</td><td className="share-cell">{share.toFixed(1)}%</td><td>{lineState(item.id)}</td>
-              </tr>
-              {item.id === "growth" && growthOpen ? growth.children.map((channel) => {
-                const channelShare = channel.value / growth.value * 100;
-                const channelSelected = selectedL3 === channel.id;
-                const sources = DATA.details[channel.id] || [];
-                const channelExpanded = sources.length > 0 && expandedL3 === channel.id;
-                return <React.Fragment key={channel.id}>
-                  <tr className={`monitor-row level-3 ${channelSelected ? "selected" : ""} ${channel.id === "other" ? "other" : ""}`}>
-                    <td><div className="tree-object depth-3"><span className="tree-rail"></span><button className="tree-label" onClick={() => onSelectL3(channel.id)}><strong>{channel.name}</strong></button>{sources.length > 0 ? <button className="tree-arrow-button" onClick={() => toggleL3(channel.id)} aria-label={channelExpanded ? `收起${channel.name}具体来源` : `展开${channel.name}具体来源`} title={channelExpanded ? "收起下级" : "展开下级"}>{treeArrow(channelExpanded)}</button> : null}</div></td><td>{channel.note}</td><td className="number-cell">{channel.value.toLocaleString()}</td><td className="share-cell">{channelShare.toFixed(1)}%</td><td>{lineState(channel.id)}</td>
-                  </tr>
-                  {channelExpanded ? sources.map((source, index) => {
-                    const sourceId = `source-${channel.id}-${index}`;
-                    const sourceShare = source.confirmed / channel.value * 100;
-                    return <tr className={`monitor-row level-4 ${selectedL4 === sourceId ? "selected" : ""}`} key={sourceId}>
-                      <td><div className="tree-object depth-4"><span className="tree-rail"></span><button className="tree-label" onClick={() => onSelectL4(sourceId)}><strong>{source.source}</strong></button></div></td><td>{source.evidence}</td><td className="number-cell">{source.confirmed.toLocaleString()}</td><td className="share-cell">{sourceShare.toFixed(1)}%</td><td>{lineState(sourceId)}</td>
-                    </tr>;
-                  }) : null}
-                </React.Fragment>;
-              }) : null}
-            </React.Fragment>;
-          }) : null}
-        </tbody>
-      </table>
-    </div>
-  </section>;
-}
-
-function App() {
-  const [period, setPeriod] = useState("14天");
-  const [activeIds, setActiveIds] = useState(() => new Set(OVERVIEW_IDS));
-  const [selectedL2, setSelectedL2] = useState("growth");
-  const [selectedL3, setSelectedL3] = useState("geo");
-  const [growthChannelsOpen, setGrowthChannelsOpen] = useState(false);
-  const [level4Open, setLevel4Open] = useState(false);
-  const [selectedL4, setSelectedL4] = useState(null);
-  const [selectorOpen, setSelectorOpen] = useState(false);
-  const [t, setTweak] = useTweaks(window.TWEAK_DEFAULTS);
-
-  useEffect(() => {
-    document.documentElement.style.setProperty("--brand", t.primaryColor);
-    document.body.dataset.density = t.density;
-  }, [t]);
-
-  const openGrowthChannels = () => {
-    setActiveIds(new Set(CHANNEL_IDS));
-    setSelectedL2("growth");
-    setGrowthChannelsOpen(true);
-    setLevel4Open(false);
-    setSelectedL4(null);
-  };
-  const showGrowthOnly = () => {
-    setActiveIds(new Set(["growth"]));
-    setSelectedL2("growth");
-    setGrowthChannelsOpen(false);
-    setLevel4Open(false);
-    setSelectedL4(null);
-  };
-  const openLevel4 = (id) => {
-    const sourceIds = sourceSeriesFor(id).map((item) => item.id);
-    setActiveIds(new Set([id, ...sourceIds]));
-    setSelectedL2("growth");
-    setSelectedL3(id);
-    setGrowthChannelsOpen(true);
-    setLevel4Open(sourceIds.length > 0);
-    setSelectedL4(null);
-  };
-  const toggle = (id) => {
-    const item = SERIES.find((series) => series.id === id);
-    if (id === "growth") {
-      showGrowthOnly();
-      return;
-    }
-    if (item?.group === "channel") {
-      openLevel4(id);
-      return;
-    }
-    if (id === "confirmed" && activeIds.has("confirmed")) {
-      setActiveIds((current) => {
-        const next = new Set(current);
-        next.delete("confirmed");
-        CHANNEL_IDS.forEach((channelId) => next.delete(channelId));
-        return next.size ? next : new Set(OVERVIEW_IDS);
-      });
-      setGrowthChannelsOpen(false);
-      setLevel4Open(false);
-      setSelectedL4(null);
-      return;
-    }
-    setActiveIds((current) => {
-      const enteringConfidence = item?.group === "confidence" && !current.has(id) && !CONFIDENCE_IDS.some((confidenceId) => current.has(confidenceId));
-      const next = enteringConfidence ? new Set() : new Set(current);
-      if (next.has(id)) {
-        next.delete(id);
-        if (id === "confirmed") CHANNEL_IDS.forEach((channelId) => next.delete(channelId));
-      } else {
-        next.add(id);
-      }
-      if (next.size === 0) return item?.group === "source" ? new Set([selectedL3]) : new Set(OVERVIEW_IDS);
-      return next;
-    });
-    if (item?.group === "confidence") {
-      setSelectedL2("growth");
-      if (id === "confirmed") setGrowthChannelsOpen(true);
-      setLevel4Open(false);
-      setSelectedL4(null);
-    }
-    if (item?.group === "department" && !activeIds.has(id)) setSelectedL2(id);
-    if (item?.group === "source" && selectedL4 === id && activeIds.has(id)) setSelectedL4(null);
-  };
-  const showOverview = () => {
-    setActiveIds(new Set(OVERVIEW_IDS));
-    setSelectedL2("growth");
-    setSelectedL3("geo");
-    setGrowthChannelsOpen(false);
-    setLevel4Open(false);
-    setSelectedL4(null);
-  };
-  const showDepartments = () => {
-    setActiveIds(new Set(DEPARTMENT_IDS));
-    setSelectedL2("growth");
-    setSelectedL3("geo");
-    setGrowthChannelsOpen(false);
-    setLevel4Open(false);
-    setSelectedL4(null);
-  };
-  const channelsOnly = () => {
-    setActiveIds(new Set(CHANNEL_IDS));
-    setSelectedL2("growth");
-    setGrowthChannelsOpen(true);
-    setLevel4Open(false);
-    setSelectedL4(null);
-  };
-  const toggleValidTotal = () => {
-    setActiveIds((current) => {
-      const next = new Set(current);
-      if (next.has("valid")) next.delete("valid"); else next.add("valid");
-      return next;
-    });
-  };
-  const toggleLineVisibility = (id) => {
-    setActiveIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-    if (selectedL4 === id && activeIds.has(id)) setSelectedL4(null);
-  };
-  const selectL2 = (id) => {
-    if (id === "growth") {
-      showGrowthOnly();
-    } else {
-      setSelectedL2(id);
-      setActiveIds(new Set([id]));
-      setGrowthChannelsOpen(false);
-      setLevel4Open(false);
-      setSelectedL4(null);
-    }
-  };
-  const selectL3 = (id) => {
-    openLevel4(id);
-  };
-  const selectL4 = (id) => {
-    setActiveIds(new Set([id]));
-    setSelectedL4(id);
-    setLevel4Open(true);
-  };
-  const openTweaks = () => window.postMessage({ type: "miaoda:tweaks:activate" }, "*");
-  const rootSeries = SERIES.filter((item) => item.group === "root");
-  const departmentSeries = SERIES.filter((item) => item.group === "department");
-  const confidenceSeries = SERIES.filter((item) => item.group === "confidence");
-  const channelSeries = SERIES.filter((item) => item.group === "channel");
-  const level4Series = sourceSeriesFor(selectedL3);
-  const activeL2 = DATA.attributionTree.children.find((item) => item.id === selectedL2);
-  const activeL3 = DATA.attributionTree.children.find((item) => item.id === "growth").children.find((item) => item.id === selectedL3);
-  const activeL4 = SOURCE_SERIES.find((item) => item.id === selectedL4);
-  const selectedChannelVisible = activeIds.has(selectedL3);
-  const activeDepartments = DEPARTMENT_IDS.filter((id) => activeIds.has(id));
-  const allGrowthChannelsVisible = CHANNEL_IDS.every((id) => activeIds.has(id));
-  const isDepartmentView = activeDepartments.length > 0 && !CONFIDENCE_IDS.some((id) => activeIds.has(id)) && !CHANNEL_IDS.some((id) => activeIds.has(id));
-  const linkLabel = selectedL4 && activeL4
-    ? `已聚焦：用增 / ${activeL3.name} / ${activeL4.name}`
-    : level4Open
-    ? `已展开：用增 / ${activeL3.name} / ${level4Series.length} 个具体来源`
-    : isDepartmentView
-      ? activeDepartments.length > 1 ? "曲线：注册归属概览" : `已联动：${SERIES.find((item) => item.id === activeDepartments[0]).name}`
-      : allGrowthChannelsVisible
-      ? "已联动：用增 / 7 个三级渠道"
-      : selectedL2 === "growth"
-      ? `已联动：用增 / ${activeL3.name}${selectedL3 !== "other" && !selectedChannelVisible ? "（曲线已隐藏）" : ""}`
-      : `已联动：${activeL2.name}`;
-
-  return <div className="app" data-screen-label="用增多渠道趋势">
-    <header className="topbar">
-      <div className="brand"><div className="brand-mark">UG</div><div><div className="brand-title">用增数据看板</div><div className="brand-sub">User growth trend</div></div></div>
-      <span className="demo-badge">演示数据 · 更新于 10:30</span>
-    </header>
-    <main className="main">
-      <div className="page-head controls-only">
-        <div className="filters"><div className="segmented">{["7天", "14天", "30天"].map((item) => <button key={item} className={period === item ? "active" : ""} onClick={() => setPeriod(item)}>{item}</button>)}</div><select className="date-select" defaultValue="2026-08-19"><option value="2026-08-19">截至 2026-08-19</option></select><button className="outline-button"><Icon name="download"></Icon>导出</button></div>
-      </div>
-
-      <section className="trend-panel">
-        <div className="selector-head"><button className="selector-toggle" onClick={() => setSelectorOpen((value) => !value)} aria-expanded={selectorOpen}><span className={selectorOpen ? "open" : ""}><Icon name="arrow" size={14}></Icon></span><strong>选择曲线</strong><small>当前显示 {activeIds.size} 条</small></button><div className="selector-summary"><em className="link-status"><i></i>{linkLabel}</em><div className="quick-actions"><button className={activeIds.has("valid") ? "total-on" : ""} onClick={toggleValidTotal}>{activeIds.has("valid") ? "隐藏总量" : "叠加总量"}</button><button onClick={showOverview}>归属概览</button>{growthChannelsOpen && !allGrowthChannelsVisible ? <button onClick={channelsOnly}>恢复 7 条渠道</button> : null}</div></div></div>
-        {selectorOpen ? <div className="selector-body">
-          <div className="selector-group root-selector"><div className="group-label">总量</div><div className="chip-grid root-chips">{rootSeries.map((item) => <SeriesChip key={item.id} item={item} active={activeIds.has(item.id)} onToggle={toggle} primaryColor={t.primaryColor}></SeriesChip>)}</div></div>
-          <div className="selector-group"><div className="group-label">注册归属</div><div className="chip-grid department-chips">{departmentSeries.map((item) => <SeriesChip key={item.id} item={item} active={activeIds.has(item.id)} onToggle={toggle} primaryColor={t.primaryColor}></SeriesChip>)}</div></div>
-          <div className="selector-group confidence-selector"><div className="group-label">归因可信度</div><div className="chip-grid confidence-chips">{confidenceSeries.map((item) => <SeriesChip key={item.id} item={item} active={activeIds.has(item.id)} onToggle={toggle} primaryColor={t.primaryColor}></SeriesChip>)}</div></div>
-          {growthChannelsOpen ? <div className="selector-group channel-selector expanded"><div className="group-label">用增渠道</div><div className="chip-grid channel-chips">{channelSeries.map((item) => <SeriesChip key={item.id} item={item} active={activeIds.has(item.id)} onToggle={toggle} primaryColor={t.primaryColor}></SeriesChip>)}</div></div> : <div className="selector-group channel-gate"><div className="group-label">用增渠道</div><button className="channel-gate-button" onClick={openGrowthChannels}><span><strong>选择“用增部分”后展开 7 条渠道曲线</strong><small>GEO、内容运营、社群&amp;站外运营、开发者运营、活动运营、热点响应、other</small></span><em>展开用增渠道 <Icon name="arrow" size={14}></Icon></em></button></div>}
-          {level4Open ? <div className="selector-group source-selector expanded"><div className="group-label">{activeL3.name} 来源</div><div className="chip-grid source-chips">{level4Series.map((item) => <SeriesChip key={item.id} item={item} active={activeIds.has(item.id)} onToggle={toggle} primaryColor={t.primaryColor}></SeriesChip>)}</div></div> : null}
-        </div> : null}
-        <div className="chart-head"><div><strong>每日注册趋势</strong><span>按注册日期 · 单位：人</span></div><div className="scale-note"><i></i>纵轴随已选曲线自动缩放</div></div>
-        <TrendChart activeIds={activeIds} primaryColor={t.primaryColor} period={period}></TrendChart>
-        <div className="chart-foot"><span>全部有效注册 = 全部注册 − 明确广告注册 − 内部账号 − 测试账号 − 机器人及爬虫账号</span><span>大概率的（&gt;60%）为非互斥证据，不与汇总相加</span></div>
-      </section>
-
-      <DrilldownTree selectedL2={selectedL2} selectedL3={selectedL3} selectedL4={selectedL4} activeIds={activeIds} growthChannelsOpen={growthChannelsOpen} level4Open={level4Open} onSelectRoot={showDepartments} onSelectL2={selectL2} onExpandGrowth={openGrowthChannels} onSelectL3={selectL3} onSelectL4={selectL4} onToggleLine={toggleLineVisibility} linkLabel={linkLabel}></DrilldownTree>
-    </main>
-    <button className="floating-style" onClick={openTweaks} aria-label="打开风格设置"><Icon name="palette"></Icon></button>
-    <TweaksPanel title="风格"><TweakSection label="曲线"></TweakSection><TweakColor label="主色" value={t.primaryColor} options={["#159A8C", "#3B82D0", "#6F69C9"]} onChange={(value) => setTweak("primaryColor", value)}></TweakColor><TweakRadio label="密度" value={t.density} options={["compact", "regular", "comfy"]} onChange={(value) => setTweak("density", value)}></TweakRadio></TweaksPanel>
-  </div>;
-}
-
-ReactDOM.createRoot(document.getElementById("root")).render(<App></App>);
-Object.assign(window, { App, TrendChart });
+Object.assign(window,{dates,nodes,fmt,short,groups});
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);

@@ -1,0 +1,10 @@
+const fs=require('node:fs');
+const path=require('node:path');
+const read=name=>fs.readFileSync(path.join(__dirname,name),'utf8');
+let html=read('index.html').replace('<title>用增归因数据看板</title>','<title>分类按日与按周 · 交互设计稿</title>');
+html=html.replace('<link rel="stylesheet" href="styles.css">',()=>'<style>'+read('styles.css')+'</style>');
+html=html.replace('<link rel="stylesheet" href="traffic.css">',()=>'<style>'+read('traffic.css')+'</style>');
+html=html.replace('<script src="mock-data.js"></script>',()=>'<script>'+read('mock-data.js')+'</script>');
+html=html.replace('<script src="unified-data.js"></script>',()=>'<script>'+read('unified-data.js')+'</script>');
+for(const file of ['tweaks-panel.jsx','unified-report.jsx','app.jsx'])html=html.replace(`<script type="text/babel" src="${file}"></script>`,()=>'<script type="text/babel">'+read(file)+'</script>');
+fs.writeFileSync(path.join(__dirname,'preview.html'),html);

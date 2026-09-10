@@ -2,3 +2,7 @@
 Thumbs.db
 *.log
 __pycache__/
+
+node_modules/
+test-output/
+preview.html

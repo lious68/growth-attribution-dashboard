@@ -1,0 +1,12 @@
+{
+  "name": "growth-attribution-dashboard",
+  "version": "1.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node package-preview.cjs",
+    "test": "npm run build && node tests/check-unified.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.60.0"
+  }
+}
